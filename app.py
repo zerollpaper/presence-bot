@@ -1,6 +1,8 @@
 import os
 import json
 import re
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import List, Tuple, Optional
 
@@ -383,6 +385,32 @@ def render_board_week(schedules):
 
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 state = load_state()
+
+def date_change_checker():
+    """
+    日付が変わったときに自動的にボードを更新するバックグラウンドタスク
+    """
+    last_date = datetime.now(TZ).date()
+    debug_log(f"[date_change_checker] Started. Current date: {last_date}")
+    
+    while True:
+        try:
+            time.sleep(3600)  # 1時間ごとにチェック
+            current_date = datetime.now(TZ).date()
+            
+            if current_date != last_date:
+                debug_log(f"[date_change_checker] Date changed: {last_date} -> {current_date}")
+                last_date = current_date
+                
+                # クライアントを取得してボードを更新
+                try:
+                    update_board_message(app.client)
+                    debug_log(f"[date_change_checker] Board updated successfully")
+                except Exception as e:
+                    debug_log(f"[date_change_checker] Failed to update board: {e}")
+        except Exception as e:
+            debug_log(f"[date_change_checker] Error: {e}")
+            time.sleep(3600)
 
 def cleanup_old_dates():
     """過去の日付を削除"""
@@ -1013,6 +1041,28 @@ def delete_bot_messages(client, channel_id):
     save_state(state)
     return deleted
 
+@app.command("/update")
+def cmd_update(ack, body, client):
+    """在室ボードを手動更新"""
+    try:
+        debug_log(f"[/update] user={body['user_id']}")
+        
+        # クリーンアップと更新
+        removed = cleanup_old_dates()
+        update_board_message(client)
+        
+        if removed > 0:
+            ack(f"🔄 在室ボードを更新しました（過去の日付 {removed} 件を削除）")
+        else:
+            ack("🔄 在室ボードを更新しました")
+        
+        debug_log(f"[/update] success")
+    except Exception as e:
+        debug_log(f"[/update] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        ack(f"⚠️ エラーが発生しました: {str(e)}")
+
 @app.command("/delete")
 def cmd_delete(ack, body, client):
     ack("🗑 presence-bot のメッセージを削除中…")
@@ -1031,4 +1081,10 @@ def cmd_delete(ack, body, client):
 
 
 if __name__ == "__main__":
+    # 日付変更チェック用のバックグラウンドスレッドを開始
+    checker_thread = threading.Thread(target=date_change_checker, daemon=True)
+    checker_thread.start()
+    debug_log("[main] Date change checker thread started")
+    
+    # Slack Botを起動
     SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
