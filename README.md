@@ -216,6 +216,7 @@ DEBUG=1 python app.py
 .
 ├── app.py                   # メインアプリケーション
 ├── state.json              # データファイル（自動生成）
+├── sync_board.py           # ボード即時同期スクリプト
 ├── test_parser.py          # パーサーのテスト
 ├── new_parser.py           # パーサーのスタンドアロン実装
 ├── SLACK_CANVAS_GUIDE.md   # ユーザー向けガイド
@@ -224,13 +225,42 @@ DEBUG=1 python app.py
 └── .gitignore             # Git除外設定
 ```
 
+### sync_board.py - ボードの即時同期
+
+`state.json`を直接編集した後、サーバー再起動なしでSlackのボードメッセージを即座に更新します。
+
+**使い方：**
+
+```bash
+# state.jsonを編集後
+python3 sync_board.py
+```
+
+**用途：**
+- `state.json`のschedulesを手動で修正した場合
+- `/delete`コマンド実行後に`board_message`がnullになった場合
+- ボードとデータファイルが不一致の際の強制同期
+
 ## 🐛 トラブルシューティング
 
 ### ボードが表示されない
-```bash
-/setup
-```
-を実行してボードを再作成してください。
+
+1. **`/setup`で再作成**
+   ```bash
+   /setup
+   ```
+
+2. **state.jsonを編集した場合**
+   ```bash
+   python3 sync_board.py
+   ```
+   またはSlackで `/update` を実行
+
+### ボードが自動更新されない
+
+- `state.json`の`board_message`が`null`になっていないか確認
+- `null`の場合は`/setup`を実行して再作成
+- `/delete`コマンド実行後は必ず`/setup`が必要
 
 ### コマンドが反応しない
 - Socket Modeが有効になっているか確認
