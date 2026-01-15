@@ -237,12 +237,22 @@ def parse_command_text(text: str, allow_weekday: bool = True, allow_date: bool =
     コマンドのテキストをパースして日付リストとnoteを返す
     allow_weekday: 曜日指定を許可
     allow_date: 日付指定を許可
+    
+    noteは""で囲まれた部分のみ認識
     """
     debug_log(f"parse_command_text: text='{text}', weekday={allow_weekday}, date={allow_date}")
     
     if not text:
         # テキストが空なら今日
         return [datetime.now(TZ)], ""
+    
+    # ""で囲まれたnoteを抽出（Slackのスマートクォートにも対応）
+    note = ""
+    note_match = re.search(r'["\u201c]([^"\u201d]*)["\u201d]', text)
+    if note_match:
+        note = note_match.group(1)
+        # noteを除去したテキストで日付パース
+        text = text[:note_match.start()] + text[note_match.end():]
     
     # カンマをスペースに置換
     text = text.replace(',', ' ')
@@ -251,35 +261,29 @@ def parse_command_text(text: str, allow_weekday: bool = True, allow_date: bool =
     tokens = text.split()
     
     dates = []
-    note_tokens = []
     
     for token in tokens:
+        if not token:  # 空のトークンはスキップ
+            continue
+            
         parsed_dates, token_type = parse_single_token(token)
         
         if parsed_dates is not None:
             # 曜日パースが許可されているか
             if token_type in ["weekday", "weekday_range"] and not allow_weekday:
-                note_tokens.append(token)
                 continue
             
             # 日付パースが許可されているか
             if token_type in ["date", "date_range", "month"] and not allow_date:
-                note_tokens.append(token)
                 continue
             
             dates.extend(parsed_dates)
             debug_log(f"  Token '{token}' parsed as {token_type}: {len(parsed_dates)} date(s)")
-        else:
-            # パースできなかったトークンはnoteに追加
-            note_tokens.append(token)
-            debug_log(f"  Token '{token}' added to note ({token_type})")
     
-    note = ' '.join(note_tokens)
-    
-    # 日付が1つもパースできなかった場合は今日+全文がnote
+    # 日付が1つもパースできなかった場合は今日
     if not dates:
-        debug_log(f"  No dates parsed, treating as note")
-        return [datetime.now(TZ)], text
+        debug_log(f"  No dates parsed, using today")
+        dates = [datetime.now(TZ)]
     
     debug_log(f"  Result: {len(dates)} date(s), note='{note}'")
     return dates, note
@@ -330,7 +334,7 @@ def render_board(schedules, target_date=None):
     return "\n".join(lines)
 
 def render_board_week(schedules):
-    """今日から7日間のボードを表示"""
+    """今日から7日間のボードを表示（noteがある日付も表示）"""
     lines = ["【在室ボード - 今週】"]
     now = datetime.now(TZ)
     
@@ -363,6 +367,8 @@ def render_board_week(schedules):
         user_schedule = schedules.get(user_name, {})
         
         day_parts = []
+        note_parts = []  # noteがある日付を記録
+        
         for i in range(7):
             date = now + timedelta(days=i)
             date_key = date_to_key(date)
@@ -374,11 +380,19 @@ def render_board_week(schedules):
                 note = info.get("note", "")
                 emoji = status_emoji.get(status, "➖")
                 day_parts.append(f"{date.day}({weekday}){emoji}")
+                
+                # noteがあれば記録
+                if note:
+                    note_parts.append(f"{date.day}({weekday}): {note}")
             else:
                 day_parts.append(f"{date.day}({weekday})➖")
         
         lines.append(user_line)
         lines.append("  " + " | ".join(day_parts))
+        
+        # noteがあれば表示
+        if note_parts:
+            lines.append("  📝 " + " | ".join(note_parts))
     
     lines.append(f"\n最終更新: {datetime.now(TZ).strftime('%H:%M')}")
     return "\n".join(lines)
@@ -448,7 +462,7 @@ def ensure_board_message(client):
         return ch, ts
     return None, None
 
-def update_board_message(client):
+def update_board_message(client, skip_cleanup=False):
     """ボードメッセージを更新（今日と今週を表示）"""
     try:
         ch, ts = ensure_board_message(client)
@@ -456,8 +470,9 @@ def update_board_message(client):
             debug_log("[update_board_message] No board message found, skipping update")
             return
         
-        # クリーンアップ
-        cleanup_old_dates()
+        # クリーンアップ（skip_cleanup=Trueの場合はスキップ）
+        if not skip_cleanup:
+            cleanup_old_dates()
         
         # 今日と今週を表示
         today_board = render_board(state["schedules"])
@@ -791,18 +806,52 @@ def cmd_clear(ack, body, client):
 
 @app.command("/note")
 def cmd_note(ack, body, client):
-    note = normalize_note(body.get("text"))
-    name = user_name(client, body["user_id"])
-    today = today_key()
-    
-    # 今日のステータスがあれば更新、なければin扱い
-    if name in state["schedules"] and today in state["schedules"][name]:
-        current_status = state["schedules"][name][today].get("status", "in")
-    else:
-        current_status = "in"
-    
-    ack(f"📝 note を更新" + (f": {note}" if note else "（空）"))
-    set_status_for_dates(client, body["user_id"], current_status, [datetime.now(TZ)], note)
+    try:
+        text = body.get("text", "").strip()
+        debug_log(f"[/note] user={body['user_id']}, text='{text}'")
+        
+        name = user_name(client, body["user_id"])
+        
+        # 日付とnoteをパース
+        dates, note = parse_command_text(text, allow_weekday=True, allow_date=True)
+        debug_log(f"[/note] parsed: dates={[d.strftime('%Y-%m-%d') for d in dates]}, note='{note}'")
+        
+        # 各日付に対してnoteを設定（既存のステータスを保持、なければ空）
+        for date in dates:
+            date_key = date_to_key(date)
+            
+            # 既存のステータスを取得、なければ空文字列
+            if name in state["schedules"] and date_key in state["schedules"][name]:
+                current_status = state["schedules"][name][date_key].get("status", "")
+            else:
+                current_status = ""
+            
+            # ステータスとnoteを設定
+            if name not in state["schedules"]:
+                state["schedules"][name] = {}
+            
+            state["schedules"][name][date_key] = {
+                "status": current_status,
+                "note": note
+            }
+            debug_log(f"  Set {name} {date_key} note = '{note}' (status='{current_status}')")
+        
+        save_state(state)
+        update_board_message(client)
+        
+        date_strs = [d.strftime("%m/%d") for d in dates]
+        if len(dates) == 1 and dates[0].date() == datetime.now(TZ).date():
+            msg = f"📝 note を更新" + (f": {note}" if note else "（空）")
+        else:
+            msg = f"📝 note を更新: {', '.join(date_strs)}" + (f" - {note}" if note else "（空）")
+        
+        ack(msg)
+        debug_log(f"[/note] success")
+    except Exception as e:
+        debug_log(f"[/note] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        ack(f"⚠️ エラーが発生しました: {str(e)}")
 
 def render_board_range(schedules, days: int):
     """指定日数分のボードを表示（コードブロック形式）"""
@@ -893,6 +942,8 @@ def render_board_range(schedules, days: int):
             user_schedule = schedules.get(user_name_item, {})
             
             day_parts = []
+            note_parts = []  # noteがある日付を記録
+            
             for i in range(days):
                 date = now + timedelta(days=i)
                 date_key = date_to_key(date)
@@ -901,13 +952,22 @@ def render_board_range(schedules, days: int):
                 if date_key in user_schedule:
                     info = user_schedule[date_key]
                     status = info.get("status", "—")
+                    note = info.get("note", "")
                     emoji = status_emoji.get(status, "➖")
                     day_parts.append(f"{date.day}({weekday}){emoji}")
+                    
+                    # noteがあれば記録
+                    if note:
+                        note_parts.append(f"{date.day}({weekday}): {note}")
                 else:
                     day_parts.append(f"{date.day}({weekday})➖")
             
             lines.append(user_line)
             lines.append("  " + " | ".join(day_parts))
+            
+            # noteがあれば表示
+            if note_parts:
+                lines.append("  📝 " + " | ".join(note_parts))
     
     lines.append(f"\n最終更新: {datetime.now(TZ).strftime('%H:%M')}")
     return "```\n" + "\n".join(lines) + "\n```"
@@ -1049,9 +1109,9 @@ def cmd_update(ack, body, client):
     try:
         debug_log(f"[/update] user={body['user_id']}")
         
-        # クリーンアップと更新
+        # クリーンアップと更新（クリーンアップは1回だけ）
         removed = cleanup_old_dates()
-        update_board_message(client)
+        update_board_message(client, skip_cleanup=True)
         
         if removed > 0:
             ack(f"🔄 在室ボードを更新しました（過去の日付 {removed} 件を削除）")

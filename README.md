@@ -227,19 +227,30 @@ DEBUG=1 python app.py
 
 ### sync_board.py - ボードの即時同期
 
-`state.json`を直接編集した後、サーバー再起動なしでSlackのボードメッセージを即座に更新します。
+`state.json`を直接編集した後、Slackのボードメッセージを更新します。
+
+**⚠️ 重要：`sync_board.py`を実行した場合は必ずボットを再起動してください**
+
+ボットはメモリ上にstateを保持しているため、ファイルを編集しただけではボットのメモリは更新されません。再起動せずに次のコマンドを実行すると、編集内容が上書きされます。
 
 **使い方：**
 
 ```bash
-# state.jsonを編集後
-python3 sync_board.py
+# 1. state.jsonを編集
+# 2. ボードの表示を更新
+python sync_board.py
+# 3. ボットを再起動（必須）
+systemctl --user restart presence-bot
 ```
 
 **用途：**
 - `state.json`のschedulesを手動で修正した場合
 - `/delete`コマンド実行後に`board_message`がnullになった場合
 - ボードとデータファイルが不一致の際の強制同期
+
+**注意：**
+- state.json編集後は必ず`systemctl --user restart presence-bot`を実行してください
+- 再起動なしでsync_board.pyだけ実行しても、次のコマンド実行時に編集内容が失われます
 
 ## 🐛 トラブルシューティング
 
@@ -252,6 +263,10 @@ python3 sync_board.py
 
 2. **state.jsonを編集した場合**
    ```bash
+   # ボットを再起動（必須）
+   systemctl --user restart presence-bot
+   
+   # ボード表示を更新（オプション）
    python3 sync_board.py
    ```
    またはSlackで `/update` を実行
