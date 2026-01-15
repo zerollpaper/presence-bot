@@ -416,18 +416,20 @@ def cleanup_old_dates():
     """過去の日付を削除"""
     today = datetime.now(TZ).date()
     removed_count = 0
+    debug_log(f"[cleanup_old_dates] Today is {today}")
     
     for user_name in list(state["schedules"].keys()):
         user_schedule = state["schedules"][user_name]
         for date_key in list(user_schedule.keys()):
             try:
                 date_obj = datetime.strptime(date_key, "%Y-%m-%d").date()
+                debug_log(f"[cleanup_old_dates] Checking {user_name} {date_key}: date_obj={date_obj}, today={today}, is_old={date_obj < today}")
                 if date_obj < today:
-                    debug_log(f"Removing old date: {user_name} {date_key}")
+                    debug_log(f"[cleanup_old_dates] Removing old date: {user_name} {date_key}")
                     del user_schedule[date_key]
                     removed_count += 1
-            except:
-                pass
+            except Exception as e:
+                debug_log(f"[cleanup_old_dates] Error parsing date {date_key}: {e}")
         
         # スケジュールが空になったユーザーを削除
         if not user_schedule:
@@ -1076,7 +1078,7 @@ def cmd_delete(ack, body, client):
     client.chat_postEphemeral(
         channel=channel_id,
         user=body["user_id"],
-        text=f"🗑 削除完了: presence-bot のメッセージ {deleted} 件"
+        text=f"🗑 削除完了: presence-bot のメッセージ {deleted} 件\n⚠️ ボードメッセージも削除されました。/setup を実行して在室ボードを再作成してください。"
     )
 
 
