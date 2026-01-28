@@ -82,7 +82,7 @@ MONTH_MAP = {
     "october": 10, "november": 11, "december": 12
 }
 
-def get_next_weekday(target_weekday: int, from_date: datetime = None) -> datetime:
+def get_next_weekday(target_weekday: int, from_date: Optional[datetime] = None) -> datetime:
     """指定した曜日の次の日付を取得（今日から始まる7日間）"""
     if from_date is None:
         from_date = datetime.now(TZ)
@@ -523,6 +523,11 @@ def set_status_for_dates(client, user_id, status, dates: List[datetime], note: s
 
 @app.command("/setup")
 def setup(ack, body, client):
+    if not is_admin(body["user_id"]):
+        ack("⚠️ このコマンドは管理者のみ実行できます")
+        return
+
+    ack("在室ボードをセットアップ中...")
     channel_id = body["channel_id"]
 
     # If a previous board message is known, unpin it (best-effort).
@@ -1127,11 +1132,11 @@ def cmd_update(ack, body, client):
 
 @app.command("/delete")
 def cmd_delete(ack, body, client):
-    ack("🗑 presence-bot のメッセージを削除中…")
-
     if not is_admin(body["user_id"]):
+        ack("⚠️ このコマンドは管理者のみ実行できます")
         return
 
+    ack("🗑 presence-bot のメッセージを削除中…")
     channel_id = body["channel_id"]
     deleted = delete_bot_messages(client, channel_id)
 
